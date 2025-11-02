@@ -1,0 +1,4 @@
+numpy>=1.23.0
+pillow>=9.0.0
+matplotlib>=3.5.0
+pyinstaller>=5.0.0
