@@ -4,14 +4,21 @@ Metrics for comparing edge maps and evaluating performance.
 import numpy as np
 from typing import Dict, Tuple
 import math
+import logging
+from scipy.spatial import cKDTree  # For efficient distance calculations
 
-def compare_edge_maps(edges1: np.ndarray, edges2: np.ndarray) -> Dict[str, float]:
+logger = logging.getLogger(__name__)
+
+def compare_edge_maps(edges1: np.ndarray, edges2: np.ndarray, 
+                     max_samples: int = 10000) -> Dict[str, float]:
     """
     Compare two binary edge maps and compute various metrics.
+    Optimized for large images using vectorized operations and sampling.
     
     Args:
         edges1: First binary edge map (reference)
         edges2: Second binary edge map (to compare)
+        max_samples: Maximum number of samples for Hausdorff distance
         
     Returns:
         Dictionary of comparison metrics
@@ -20,7 +27,9 @@ def compare_edge_maps(edges1: np.ndarray, edges2: np.ndarray) -> Dict[str, float
     edges1_bin = (edges1 > 0).astype(np.uint8)
     edges2_bin = (edges2 > 0).astype(np.uint8)
     
-    # Compute confusion matrix
+    logger.debug(f"Comparing edge maps: {edges1_bin.shape}, edges1 pixels: {np.sum(edges1_bin)}, edges2 pixels: {np.sum(edges2_bin)}")
+    
+    # Compute confusion matrix using vectorized operations
     tp = np.sum((edges1_bin == 1) & (edges2_bin == 1))
     fp = np.sum((edges1_bin == 0) & (edges2_bin == 1))
     fn = np.sum((edges1_bin == 1) & (edges2_bin == 0))
@@ -39,8 +48,10 @@ def compare_edge_maps(edges1: np.ndarray, edges2: np.ndarray) -> Dict[str, float
     # Jaccard similarity (IoU)
     iou = tp / (tp + fp + fn) if (tp + fp + fn) > 0 else 0.0
     
-    # Hausdorff-like distance (approximate)
-    h_distance = approximate_hausdorff_distance(edges1_bin, edges2_bin)
+    # Hausdorff-like distance (optimized)
+    h_distance = optimized_hausdorff_distance(edges1_bin, edges2_bin, max_samples)
+    
+    logger.debug(f"Comparison results: TP={tp}, FP={fp}, FN={fn}, Precision={precision:.4f}, Recall={recall:.4f}")
     
     return {
         'agreement': agreement,
@@ -56,15 +67,16 @@ def compare_edge_maps(edges1: np.ndarray, edges2: np.ndarray) -> Dict[str, float
         'true_negatives': int(tn)
     }
 
-def approximate_hausdorff_distance(edges1: np.ndarray, edges2: np.ndarray, 
-                                  max_distance: float = 50.0) -> float:
+def optimized_hausdorff_distance(edges1: np.ndarray, edges2: np.ndarray, 
+                                max_samples: int = 10000) -> float:
     """
-    Compute approximate Hausdorff distance between two edge maps.
+    Compute approximate Hausdorff distance between two edge maps efficiently.
+    Uses KD-tree for fast nearest neighbor searches and sampling for large images.
     
     Args:
         edges1: First binary edge map
-        edges2: Second binary edge map
-        max_distance: Maximum distance to consider
+        edges2: Second binary edge map  
+        max_samples: Maximum number of edge pixels to sample
         
     Returns:
         Approximate Hausdorff distance
@@ -74,27 +86,27 @@ def approximate_hausdorff_distance(edges1: np.ndarray, edges2: np.ndarray,
     coords2 = np.argwhere(edges2 > 0)
     
     if len(coords1) == 0 or len(coords2) == 0:
-        return max_distance
-        
-    # Compute directed Hausdorff distances
-    def directed_hausdorff(coords_a, coords_b):
-        max_min_dist = 0
-        for point_a in coords_a:
-            min_dist = float('inf')
-            for point_b in coords_b:
-                dist = np.linalg.norm(point_a - point_b)
-                if dist < min_dist:
-                    min_dist = dist
-                    if min_dist == 0:  # Found exact match
-                        break
-            if min_dist > max_min_dist:
-                max_min_dist = min_dist
-            if max_min_dist > max_distance:  # Early termination
-                break
-        return max_min_dist
+        return float('inf')
     
-    h1 = directed_hausdorff(coords1, coords2)
-    h2 = directed_hausdorff(coords2, coords1)
+    # Sample coordinates if too many (for performance)
+    if len(coords1) > max_samples:
+        indices = np.random.choice(len(coords1), max_samples, replace=False)
+        coords1 = coords1[indices]
+    
+    if len(coords2) > max_samples:
+        indices = np.random.choice(len(coords2), max_samples, replace=False)
+        coords2 = coords2[indices]
+    
+    # Use KD-tree for efficient distance computation
+    tree1 = cKDTree(coords1)
+    tree2 = cKDTree(coords2)
+    
+    # Compute directed Hausdorff distances
+    dist1, _ = tree2.query(coords1, workers=-1)
+    dist2, _ = tree1.query(coords2, workers=-1)
+    
+    h1 = np.max(dist1)
+    h2 = np.max(dist2)
     
     return max(h1, h2)
 
@@ -117,8 +129,12 @@ def compute_gradient_metrics(gradient: np.ndarray, edges: np.ndarray) -> Dict[st
         'mean_gradient_at_non_edges': float(np.mean(non_edge_pixels)) if len(non_edge_pixels) > 0 else 0.0,
         'std_gradient_at_edges': float(np.std(edge_pixels)) if len(edge_pixels) > 0 else 0.0,
         'std_gradient_at_non_edges': float(np.std(non_edge_pixels)) if len(non_edge_pixels) > 0 else 0.0,
-        'edge_non_edge_ratio': float(np.mean(edge_pixels) / np.mean(non_edge_pixels)) 
-        if len(edge_pixels) > 0 and len(non_edge_pixels) > 0 and np.mean(non_edge_pixels) > 0 else 0.0
     }
+    
+    # Edge-to-non-edge ratio (avoid division by zero)
+    if len(edge_pixels) > 0 and len(non_edge_pixels) > 0 and np.mean(non_edge_pixels) > 0:
+        metrics['edge_non_edge_ratio'] = float(np.mean(edge_pixels) / np.mean(non_edge_pixels))
+    else:
+        metrics['edge_non_edge_ratio'] = 0.0
     
     return metrics

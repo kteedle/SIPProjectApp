@@ -10,14 +10,18 @@ import numpy as np
 from PIL import Image, ImageTk
 import os
 from datetime import datetime
+import time
 
-from app.io_utils import load_image, save_image
+from app.io_utils import load_image, save_image, get_image_bands
 from app.processing import (
     apply_smoothing, 
     apply_sobel, 
     threshold_image,
     generate_box_kernel,
-    generate_gaussian_kernel
+    generate_gaussian_kernel,
+    process_custom_rgb_bands,
+    process_all_bands,
+    process_single_band
 )
 from app.viz import create_comparison_display
 from app.metrics import compare_edge_maps
@@ -27,19 +31,24 @@ class ImageProcessingApp:
     
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Image Edge Processor")
-        self.root.geometry("1200x800")
+        self.root.title("Image Edge Processor - Enhanced")
+        self.root.geometry("1400x900")
         
         # State variables
         self.current_image: Optional[np.ndarray] = None
         self.original_image: Optional[np.ndarray] = None
+        self.image_bands: List[Dict] = []
         self.results: Dict[str, Any] = {}
+        self.processing_thread: Optional[threading.Thread] = None
+        self.abort_processing = False
+        
         self.setup_logging()
         self.create_widgets()
         
     def setup_logging(self):
         """Setup logging to text widget."""
         self.log_messages: List[str] = []
+        logging.basicConfig(level=logging.INFO)
         
     def log(self, message: str):
         """Add message to log."""
@@ -84,31 +93,103 @@ class ImageProcessingApp:
         
     def create_control_panel(self, parent: ttk.Frame):
         """Create the control panel with all input widgets."""
+        # Create a scrollable frame for controls
+        canvas = tk.Canvas(parent)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Pack the canvas and scrollbar
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Now create all controls inside scrollable_frame instead of parent
+        control_parent = scrollable_frame
+        
         # File selection
-        file_frame = ttk.Frame(parent)
+        file_frame = ttk.Frame(control_parent)
         file_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         
         ttk.Button(file_frame, text="Load Image", 
-                  command=self.load_image).grid(row=0, column=0, sticky=tk.W)
+                command=self.load_image).grid(row=0, column=0, sticky=tk.W)
         self.file_label = ttk.Label(file_frame, text="No file selected")
         self.file_label.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(10, 0))
         file_frame.columnconfigure(1, weight=1)
         
+        # Band selection - RESTORED MULTI-BAND OPTIONS
+        self.band_frame = ttk.LabelFrame(control_parent, text="Band Processing", padding="5")
+        self.band_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        self.band_var = tk.StringVar(value="all_bands")
+        ttk.Radiobutton(self.band_frame, text="All Bands (Color)", 
+                    variable=self.band_var, value="all_bands",
+                    command=self.on_band_mode_change).grid(row=0, column=0, sticky=tk.W)
+        ttk.Radiobutton(self.band_frame, text="Single Band", 
+                    variable=self.band_var, value="single",
+                    command=self.on_band_mode_change).grid(row=1, column=0, sticky=tk.W)
+        ttk.Radiobutton(self.band_frame, text="Custom RGB Bands", 
+                    variable=self.band_var, value="custom_rgb",
+                    command=self.on_band_mode_change).grid(row=2, column=0, sticky=tk.W)
+        
+        # Single band selection (initially hidden)
+        self.single_band_frame = ttk.Frame(self.band_frame)
+        self.single_band_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(5, 0))
+        
+        ttk.Label(self.single_band_frame, text="Select band:").grid(row=0, column=0, sticky=tk.W)
+        
+        self.single_band_var = tk.StringVar(value="0")
+        self.single_band_combo = ttk.Combobox(self.single_band_frame, textvariable=self.single_band_var, 
+                                            state="readonly", width=15)
+        self.single_band_combo.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(5, 0))
+        
+        self.single_band_frame.grid_remove()  # Hide initially
+        
+        # Custom RGB band selection (initially hidden)
+        self.custom_rgb_frame = ttk.Frame(self.band_frame)
+        self.custom_rgb_frame.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(5, 0))
+        
+        ttk.Label(self.custom_rgb_frame, text="Red Band:").grid(row=0, column=0, sticky=tk.W)
+        self.red_band_var = tk.StringVar(value="0")
+        self.red_band_combo = ttk.Combobox(self.custom_rgb_frame, textvariable=self.red_band_var, 
+                                        state="readonly", width=12)
+        self.red_band_combo.grid(row=1, column=0, sticky=tk.W, padx=(0, 5))
+        
+        ttk.Label(self.custom_rgb_frame, text="Green Band:").grid(row=0, column=1, sticky=tk.W)
+        self.green_band_var = tk.StringVar(value="1") 
+        self.green_band_combo = ttk.Combobox(self.custom_rgb_frame, textvariable=self.green_band_var,
+                                            state="readonly", width=12)
+        self.green_band_combo.grid(row=1, column=1, sticky=tk.W, padx=(0, 5))
+        
+        ttk.Label(self.custom_rgb_frame, text="Blue Band:").grid(row=0, column=2, sticky=tk.W)
+        self.blue_band_var = tk.StringVar(value="2")
+        self.blue_band_combo = ttk.Combobox(self.custom_rgb_frame, textvariable=self.blue_band_var,
+                                        state="readonly", width=12)
+        self.blue_band_combo.grid(row=1, column=2, sticky=tk.W)
+        
+        self.custom_rgb_frame.grid_remove()  # Hide initially
+        
         # Smoothing options
-        smooth_frame = ttk.LabelFrame(parent, text="Smoothing", padding="5")
-        smooth_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        smooth_frame = ttk.LabelFrame(control_parent, text="Smoothing", padding="5")
+        smooth_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         
         self.smooth_var = tk.StringVar(value="box")
         ttk.Radiobutton(smooth_frame, text="Box Filter", 
-                       variable=self.smooth_var, value="box").grid(row=0, column=0, sticky=tk.W)
+                    variable=self.smooth_var, value="box").grid(row=0, column=0, sticky=tk.W)
         ttk.Radiobutton(smooth_frame, text="Gaussian", 
-                       variable=self.smooth_var, value="gaussian").grid(row=0, column=1, sticky=tk.W)
+                    variable=self.smooth_var, value="gaussian").grid(row=0, column=1, sticky=tk.W)
         
         # Kernel size
         ttk.Label(smooth_frame, text="Kernel Size:").grid(row=1, column=0, sticky=tk.W)
         self.kernel_size_var = tk.StringVar(value="3")
         kernel_spin = ttk.Spinbox(smooth_frame, from_=3, to=31, increment=2, 
-                                 textvariable=self.kernel_size_var, width=10)
+                                textvariable=self.kernel_size_var, width=10)
         kernel_spin.grid(row=1, column=1, sticky=tk.W, padx=(5, 0))
         
         # Sigma (for Gaussian)
@@ -118,68 +199,112 @@ class ImageProcessingApp:
                                 textvariable=self.sigma_var, width=10)
         sigma_spin.grid(row=2, column=1, sticky=tk.W, padx=(5, 0))
         
-        # Band selection
-        band_frame = ttk.LabelFrame(parent, text="Band Processing", padding="5")
-        band_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
-        
-        self.band_var = tk.StringVar(value="grayscale")
-        ttk.Radiobutton(band_frame, text="Grayscale (Luminance)", 
-                       variable=self.band_var, value="grayscale").grid(row=0, column=0, sticky=tk.W)
-        ttk.Radiobutton(band_frame, text="All Bands Separate", 
-                       variable=self.band_var, value="all").grid(row=1, column=0, sticky=tk.W)
-        
         # Sobel options
-        sobel_frame = ttk.LabelFrame(parent, text="Sobel Operator", padding="5")
+        sobel_frame = ttk.LabelFrame(control_parent, text="Sobel Operator", padding="5")
         sobel_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         
         self.sobel_var = tk.StringVar(value="both")
         ttk.Radiobutton(sobel_frame, text="X Direction", 
-                       variable=self.sobel_var, value="x").grid(row=0, column=0, sticky=tk.W)
+                    variable=self.sobel_var, value="x").grid(row=0, column=0, sticky=tk.W)
         ttk.Radiobutton(sobel_frame, text="Y Direction", 
-                       variable=self.sobel_var, value="y").grid(row=1, column=0, sticky=tk.W)
+                    variable=self.sobel_var, value="y").grid(row=1, column=0, sticky=tk.W)
         ttk.Radiobutton(sobel_frame, text="Both (Magnitude)", 
-                       variable=self.sobel_var, value="both").grid(row=2, column=0, sticky=tk.W)
+                    variable=self.sobel_var, value="both").grid(row=2, column=0, sticky=tk.W)
         
         # Threshold options
-        threshold_frame = ttk.LabelFrame(parent, text="Threshold", padding="5")
+        threshold_frame = ttk.LabelFrame(control_parent, text="Threshold", padding="5")
         threshold_frame.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         
-        ttk.Label(threshold_frame, text="Threshold:").grid(row=0, column=0, sticky=tk.W)
+        ttk.Label(threshold_frame, text="Threshold Value:").grid(row=0, column=0, sticky=tk.W)
         self.threshold_var = tk.DoubleVar(value=0.2)
         threshold_scale = ttk.Scale(threshold_frame, from_=0.0, to=1.0, 
-                                   variable=self.threshold_var, orient=tk.HORIZONTAL)
+                                variable=self.threshold_var, orient=tk.HORIZONTAL)
         threshold_scale.grid(row=1, column=0, sticky=(tk.W, tk.E))
         
         self.threshold_entry = ttk.Entry(threshold_frame, textvariable=self.threshold_var, width=10)
         self.threshold_entry.grid(row=0, column=1, sticky=tk.W, padx=(10, 0))
         
         self.threshold_mode = tk.StringVar(value="relative")
-        ttk.Radiobutton(threshold_frame, text="Relative", 
-                       variable=self.threshold_mode, value="relative").grid(row=2, column=0, sticky=tk.W)
-        ttk.Radiobutton(threshold_frame, text="Absolute", 
-                       variable=self.threshold_mode, value="absolute").grid(row=2, column=1, sticky=tk.W)
+        threshold_mode_frame = ttk.Frame(threshold_frame)
+        threshold_mode_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(5, 0))
+        
+        ttk.Radiobutton(threshold_mode_frame, text="Relative (0-1 of max gradient)", 
+                    variable=self.threshold_mode, value="relative").grid(row=0, column=0, sticky=tk.W)
+        ttk.Radiobutton(threshold_mode_frame, text="Absolute (0-1 value)", 
+                    variable=self.threshold_mode, value="absolute").grid(row=1, column=0, sticky=tk.W)
         
         # Comparison toggle
         self.compare_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(parent, text="Compare Box vs Gaussian", 
-                       variable=self.compare_var).grid(row=5, column=0, sticky=tk.W, pady=(0, 10))
+        ttk.Checkbutton(control_parent, text="Compare Box vs Gaussian", 
+                    variable=self.compare_var).grid(row=5, column=0, sticky=tk.W, pady=(0, 10))
         
         # Action buttons
-        button_frame = ttk.Frame(parent)
+        button_frame = ttk.Frame(control_parent)
         button_frame.grid(row=6, column=0, sticky=(tk.W, tk.E))
         
         ttk.Button(button_frame, text="Preview", 
-                  command=self.preview_processing).grid(row=0, column=0, padx=(0, 5))
+                command=self.preview_processing).grid(row=0, column=0, padx=(0, 5))
         ttk.Button(button_frame, text="Run Full Processing", 
-                  command=self.run_processing).grid(row=0, column=1, padx=5)
+                command=self.run_processing).grid(row=0, column=1, padx=5)
+        ttk.Button(button_frame, text="Abort", 
+                command=self.abort_processing_command).grid(row=0, column=2, padx=5)
+        ttk.Button(button_frame, text="Clear", 
+                command=self.clear_all).grid(row=0, column=3, padx=5)
+        
         ttk.Button(button_frame, text="Save Results", 
-                  command=self.save_results).grid(row=0, column=2, padx=5)
+                command=self.save_results).grid(row=1, column=0, padx=(0, 5), pady=(5, 0))
         ttk.Button(button_frame, text="Export Metrics", 
-                  command=self.export_metrics).grid(row=0, column=3, padx=(5, 0))
+                command=self.export_metrics).grid(row=1, column=1, padx=5, pady=(5, 0))
         
         # Progress bar
-        self.progress = ttk.Progressbar(parent, mode='indeterminate')
+        self.progress = ttk.Progressbar(control_parent, mode='indeterminate')
         self.progress.grid(row=7, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
+        
+        # Status label
+        self.status_var = tk.StringVar(value="Ready")
+        ttk.Label(control_parent, textvariable=self.status_var).grid(row=8, column=0, sticky=tk.W, pady=(5, 0))
+        
+        # Configure column weights for responsive layout
+        control_parent.columnconfigure(0, weight=1)
+        for frame in [file_frame, self.band_frame, smooth_frame, sobel_frame, threshold_frame, button_frame]:
+            frame.columnconfigure(0, weight=1)
+
+    def on_band_mode_change(self):
+        """Show/hide band selection widgets based on mode."""
+        if self.band_var.get() == "single":
+            self.single_band_frame.grid()
+            self.custom_rgb_frame.grid_remove()
+            self.update_band_combos()
+        elif self.band_var.get() == "custom_rgb":
+            self.single_band_frame.grid_remove()
+            self.custom_rgb_frame.grid()
+            self.update_band_combos()
+        else:
+            self.single_band_frame.grid_remove()
+            self.custom_rgb_frame.grid_remove()
+            
+    def update_band_combos(self):
+        """Update all band combo boxes with available bands."""
+        band_descriptions = []
+        for band in self.image_bands:
+            band_descriptions.append(f"{band['index']}: {band['description']}")
+        
+        # Update all combo boxes
+        self.single_band_combo['values'] = band_descriptions
+        self.red_band_combo['values'] = band_descriptions
+        self.green_band_combo['values'] = band_descriptions  
+        self.blue_band_combo['values'] = band_descriptions
+        
+        # Set default values if not already set
+        if band_descriptions:
+            if not self.single_band_combo.get():
+                self.single_band_combo.set(band_descriptions[0])
+            if not self.red_band_combo.get():
+                self.red_band_combo.set(band_descriptions[0])
+            if not self.green_band_combo.get() and len(band_descriptions) > 1:
+                self.green_band_combo.set(band_descriptions[1])
+            if not self.blue_band_combo.get() and len(band_descriptions) > 2:
+                self.blue_band_combo.set(band_descriptions[2])
         
     def create_display_panel(self, parent: ttk.Frame):
         """Create the display panel for showing images."""
@@ -217,8 +342,12 @@ class ImageProcessingApp:
         self.comparison_canvas.pack(fill=tk.BOTH, expand=True)
         
         # Metrics display
-        self.metrics_text = tk.Text(self.comparison_tab, height=10, wrap=tk.WORD)
-        self.metrics_text.pack(fill=tk.BOTH, expand=False)
+        metrics_frame = ttk.Frame(self.comparison_tab)
+        metrics_frame.pack(fill=tk.BOTH, expand=False)
+        
+        ttk.Label(metrics_frame, text="Comparison Metrics:", font=('Arial', 10, 'bold')).pack(anchor=tk.W, pady=(5, 0))
+        self.metrics_text = tk.Text(metrics_frame, height=12, wrap=tk.WORD)
+        self.metrics_text.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
         
     def create_log_panel(self, parent: ttk.Frame):
         """Create the logging panel."""
@@ -237,21 +366,37 @@ class ImageProcessingApp:
         file_path = filedialog.askopenfilename(
             title="Select Image",
             filetypes=[
-                ("Image files", "*.png *.jpg *.jpeg *.tiff *.tif *.bmp"),
+                ("All supported", "*.png *.jpg *.jpeg *.tiff *.tif *.bmp *.jp2 *.img"),
+                ("Geospatial", "*.tif *.tiff *.jp2 *.img"),
+                ("Regular images", "*.png *.jpg *.jpeg *.bmp"),
                 ("All files", "*.*")
             ]
         )
         
         if file_path:
             try:
-                self.original_image = load_image(file_path)
+                self.status_var.set("Loading image...")
+                # Load with max size for display
+                self.original_image = load_image(file_path, max_size=(800, 600))
                 self.current_image = self.original_image.copy()
                 self.file_label.config(text=os.path.basename(file_path))
                 self.display_image(self.original_image, self.original_canvas)
+                
+                # Get band information
+                self.image_bands = get_image_bands(file_path)
                 self.log(f"Loaded image: {file_path}, shape: {self.original_image.shape}")
+                self.log(f"Available bands: {len(self.image_bands)}")
+                for band in self.image_bands:
+                    self.log(f"  Band {band['index']}: {band['description']}")
+                
+                # Update band selection
+                self.update_band_combos()
+                self.status_var.set("Ready")
+                
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load image: {str(e)}")
                 self.log(f"Error loading image: {str(e)}")
+                self.status_var.set("Error loading image")
                 
     def display_image(self, image: np.ndarray, canvas: tk.Canvas):
         """Display an image on a canvas."""
@@ -260,7 +405,19 @@ class ImageProcessingApp:
             
         # Convert numpy array to PIL Image
         if image.dtype != np.uint8:
-            image_display = (np.clip(image, 0, 1) * 255).astype(np.uint8)
+            # Handle binary edge maps specially
+            if np.max(image) <= 1.0 and np.min(image) >= 0:
+                if len(image.shape) == 2:  # Binary image
+                    image_display = (image * 255).astype(np.uint8)
+                else:  # Color image
+                    image_display = (np.clip(image, 0, 1) * 255).astype(np.uint8)
+            else:
+                # Normalize to 0-255
+                image_min, image_max = np.min(image), np.max(image)
+                if image_max > image_min:
+                    image_display = ((image - image_min) / (image_max - image_min) * 255).astype(np.uint8)
+                else:
+                    image_display = np.zeros_like(image, dtype=np.uint8)
         else:
             image_display = image
             
@@ -270,6 +427,7 @@ class ImageProcessingApp:
             pil_image = Image.fromarray(image_display.squeeze(), 'L')
             
         # Resize to fit canvas
+        canvas.update_idletasks()  # Ensure canvas has correct dimensions
         canvas_width = canvas.winfo_width()
         canvas_height = canvas.winfo_height()
         
@@ -295,14 +453,26 @@ class ImageProcessingApp:
                 return False
                 
             threshold = float(self.threshold_var.get())
-            if threshold < 0 or threshold > 1:
-                messagebox.showerror("Error", "Threshold must be between 0 and 1")
-                return False
+            if self.threshold_mode.get() == "relative":
+                if threshold < 0 or threshold > 1:
+                    messagebox.showerror("Error", "Relative threshold must be between 0 and 1")
+                    return False
+            else:  # absolute
+                if threshold < 0 or threshold > 1:
+                    messagebox.showerror("Error", "Absolute threshold must be between 0 and 1")
+                    return False
                 
             if self.original_image is None:
                 messagebox.showerror("Error", "Please load an image first")
                 return False
                 
+            # Validate band selection for custom mode
+            if self.band_var.get() == "custom":
+                selected_bands = self.band_listbox.curselection()
+                if not selected_bands:
+                    messagebox.showerror("Error", "Please select at least one band for custom processing")
+                    return False
+                    
             return True
             
         except ValueError as e:
@@ -317,21 +487,55 @@ class ImageProcessingApp:
         # Create downsampled version for preview
         preview_image = self.original_image[::2, ::2]  # Simple downsampling
         
-        threading.Thread(target=self._process_image, 
-                        args=(preview_image, True), daemon=True).start()
+        self.abort_processing = False
+        self.processing_thread = threading.Thread(target=self._process_image, 
+                        args=(preview_image, True), daemon=True)
+        self.processing_thread.start()
         
     def run_processing(self):
         """Run full processing on the original image."""
         if not self.validate_inputs():
             return
             
-        threading.Thread(target=self._process_image, 
-                        args=(self.original_image, False), daemon=True).start()
+        self.abort_processing = False
+        self.processing_thread = threading.Thread(target=self._process_image, 
+                        args=(self.original_image, False), daemon=True)
+        self.processing_thread.start()
+        
+    def abort_processing_command(self):
+        """Abort the current processing operation."""
+        self.abort_processing = True
+        self.status_var.set("Aborting...")
+        self.log("Aborting processing...")
+        
+    def clear_all(self):
+        """Clear all results and reset the interface."""
+        self.original_image = None
+        self.current_image = None
+        self.results = {}
+        self.image_bands = []
+        
+        # Clear displays
+        for canvas in [self.original_canvas, self.smoothed_canvas, 
+                      self.gradient_canvas, self.edges_canvas, self.comparison_canvas]:
+            canvas.delete("all")
+            canvas.image = None
+            
+        # Clear log
+        self.log_text.delete(1.0, tk.END)
+        self.log_messages = []
+        
+        # Reset UI
+        self.file_label.config(text="No file selected")
+        self.metrics_text.delete(1.0, tk.END)
+        self.status_var.set("Ready")
+        self.log("Cleared all results")
         
     def _process_image(self, image: np.ndarray, is_preview: bool):
         """Process image in a separate thread."""
         self.progress.start()
-        self.log(f"Starting {'preview' if is_preview else 'full'} processing...")
+        self.status_var.set("Processing..." if not is_preview else "Preview processing...")
+        start_time = time.time()
         
         try:
             # Get parameters
@@ -345,8 +549,8 @@ class ImageProcessingApp:
             compare = self.compare_var.get()
             
             # Log parameters
-            self.log(f"Parameters: kernel={kernel_size}, sigma={sigma}, threshold={threshold_val}")
-            self.log(f"Smooth type: {smooth_type}, Band mode: {band_mode}")
+            self.log(f"Parameters: kernel={kernel_size}, sigma={sigma}, threshold={threshold_val} ({threshold_mode})")
+            self.log(f"Smooth type: {smooth_type}, Band mode: {band_mode}, Sobel mode: {sobel_mode}")
             
             # Process image
             results = self.process_pipeline(
@@ -354,71 +558,132 @@ class ImageProcessingApp:
                 smooth_type, band_mode, sobel_mode, threshold_mode, compare
             )
             
+            if self.abort_processing:
+                self.log("Processing aborted by user")
+                return
+                
+            processing_time = time.time() - start_time
+            self.log(f"Processing completed in {processing_time:.2f} seconds")
+            
             # Update UI in main thread
             self.root.after(0, self._update_results, results, is_preview)
             
         except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror("Error", f"Processing failed: {str(e)}"))
-            self.log(f"Processing error: {str(e)}")
-            import traceback
-            self.log(f"Traceback: {traceback.format_exc()}")
+            if not self.abort_processing:
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Processing failed: {str(e)}"))
+                self.log(f"Processing error: {str(e)}")
+                import traceback
+                self.log(f"Traceback: {traceback.format_exc()}")
         finally:
             self.root.after(0, self.progress.stop)
+            self.root.after(0, lambda: self.status_var.set("Ready"))
             
     def process_pipeline(self, image: np.ndarray, kernel_size: int, sigma: float, 
-                        threshold_val: float, smooth_type: str, band_mode: str,
-                        sobel_mode: str, threshold_mode: str, compare: bool) -> Dict[str, Any]:
+                    threshold_val: float, smooth_type: str, band_mode: str,
+                    sobel_mode: str, threshold_mode: str, compare: bool) -> Dict[str, Any]:
         """Execute the complete image processing pipeline."""
         results = {}
         
-        # Handle band selection
-        if band_mode == "grayscale" and len(image.shape) == 3:
-            # Convert to grayscale using luminance formula
-            if image.shape[2] == 3:  # RGB
-                gray = 0.299 * image[:,:,0] + 0.587 * image[:,:,1] + 0.114 * image[:,:,2]
-            else:  # Multi-band, use first channel
-                gray = image[:,:,0]
-            working_image = gray
+        # Handle band selection - RESTORED MULTI-BAND OPTIONS
+        if band_mode == "all_bands":
+            # Process all bands as color image
+            working_image = process_all_bands(image)
+            self.log("Processing all bands as color image")
+            
+        elif band_mode == "single":
+            # Get selected band index
+            band_desc = self.single_band_var.get()
+            band_index = int(band_desc.split(':')[0])
+            working_image = process_single_band(image, band_index)
+            band_name = self.image_bands[band_index]['description']
+            self.log(f"Using single band: {band_name} (index {band_index})")
+            
+        elif band_mode == "custom_rgb":
+            # Get custom RGB band indices
+            red_desc = self.red_band_var.get()
+            green_desc = self.green_band_var.get()
+            blue_desc = self.blue_band_var.get()
+            
+            red_idx = int(red_desc.split(':')[0])
+            green_idx = int(green_desc.split(':')[0]) 
+            blue_idx = int(blue_desc.split(':')[0])
+            
+            working_image = process_custom_rgb_bands(image, red_idx, green_idx, blue_idx)
+            
+            red_name = self.image_bands[red_idx]['description']
+            green_name = self.image_bands[green_idx]['description']
+            blue_name = self.image_bands[blue_idx]['description']
+            self.log(f"Custom RGB bands - R: {red_name}, G: {green_name}, B: {blue_name}")
         else:
             working_image = image
             
+        if self.abort_processing:
+            return {}
+        
+        # Log image properties
+        if len(working_image.shape) == 3:
+            self.log(f"Working image: {working_image.shape[1]}x{working_image.shape[0]} with {working_image.shape[2]} bands")
+        else:
+            self.log(f"Working image: {working_image.shape[1]}x{working_image.shape[0]} (single channel)")
+        
         # Apply smoothing
-        if smooth_type == "box":
-            smoothed = apply_smoothing(working_image, "box", kernel_size)
-        else:  # gaussian
-            smoothed = apply_smoothing(working_image, "gaussian", kernel_size, sigma)
-            
+        self.log(f"Applying {smooth_type} smoothing with kernel size {kernel_size}...")
+        smoothed = apply_smoothing(working_image, smooth_type, kernel_size, sigma)
         results['smoothed'] = smoothed
         
+        if self.abort_processing:
+            return {}
+        
         # Apply Sobel
+        self.log(f"Applying Sobel operator ({sobel_mode})...")
         gradient_x, gradient_y, gradient_mag = apply_sobel(smoothed, sobel_mode)
         results['gradient_x'] = gradient_x
         results['gradient_y'] = gradient_y
         results['gradient_mag'] = gradient_mag
         
-        # Apply threshold
-        if threshold_mode == "relative":
-            absolute_threshold = threshold_val * np.max(gradient_mag)
+        # Log gradient information
+        if len(gradient_mag.shape) == 3:
+            self.log(f"Multi-band gradient magnitude - shape: {gradient_mag.shape}")
+            for i in range(min(3, gradient_mag.shape[2])):
+                self.log(f"  Band {i}: [{np.min(gradient_mag[:,:,i]):.6f}, {np.max(gradient_mag[:,:,i]):.6f}]")
         else:
-            absolute_threshold = threshold_val
-            
-        edges = threshold_image(gradient_mag, absolute_threshold)
+            self.log(f"Gradient magnitude range: [{np.min(gradient_mag):.6f}, {np.max(gradient_mag):.6f}]")
+        
+        if self.abort_processing:
+            return {}
+        
+        # Apply threshold
+        self.log(f"Applying threshold ({threshold_mode}: {threshold_val})...")
+        edges = threshold_image(gradient_mag, threshold_val, threshold_mode)
         results['edges'] = edges
-        results['threshold_used'] = absolute_threshold
+        results['threshold_used'] = threshold_val
+        results['threshold_mode'] = threshold_mode
+        
+        edge_pixels = np.sum(edges > 0)
+        self.log(f"Edge map: {edge_pixels} edge pixels ({edge_pixels/edges.size*100:.2f}%)")
         
         # Comparison if requested
-        if compare:
+        if compare and not self.abort_processing:
+            self.log("Starting comparison between Box and Gaussian filters...")
+            
             # Process with box filter
             box_smoothed = apply_smoothing(working_image, "box", kernel_size)
             box_gradient_x, box_gradient_y, box_gradient_mag = apply_sobel(box_smoothed, sobel_mode)
-            box_edges = threshold_image(box_gradient_mag, absolute_threshold)
+            box_edges = threshold_image(box_gradient_mag, threshold_val, threshold_mode)
             
-            # Process with gaussian filter
+            if self.abort_processing:
+                return {}
+            
+            # Process with gaussian filter  
             gaussian_smoothed = apply_smoothing(working_image, "gaussian", kernel_size, sigma)
             gaussian_gradient_x, gaussian_gradient_y, gaussian_gradient_mag = apply_sobel(gaussian_smoothed, sobel_mode)
-            gaussian_edges = threshold_image(gaussian_gradient_mag, absolute_threshold)
+            gaussian_edges = threshold_image(gaussian_gradient_mag, threshold_val, threshold_mode)
+            
+            if self.abort_processing:
+                return {}
             
             # Compare edge maps
+            self.log("Computing comparison metrics...")
             comparison_metrics = compare_edge_maps(box_edges, gaussian_edges)
             
             results['comparison'] = {
@@ -427,10 +692,15 @@ class ImageProcessingApp:
                 'metrics': comparison_metrics
             }
             
+            self.log("Comparison completed")
+            
         return results
         
     def _update_results(self, results: Dict[str, Any], is_preview: bool):
         """Update UI with processing results."""
+        if self.abort_processing:
+            return
+            
         self.results = results
         
         # Display results
@@ -453,9 +723,20 @@ class ImageProcessingApp:
             self.display_image(comparison_image, self.comparison_canvas)
             
             # Display metrics
-            metrics_text = "Comparison Metrics:\n\n"
-            for key, value in comp['metrics'].items():
-                metrics_text += f"{key}: {value:.4f}\n"
+            metrics_text = "Comparison Metrics (Box vs Gaussian):\n\n"
+            metrics = comp['metrics']
+            metrics_text += f"Agreement: {metrics['agreement']:.4f}\n"
+            metrics_text += f"Disagreement: {metrics['disagreement']:.4f}\n"
+            metrics_text += f"Precision: {metrics['precision']:.4f}\n"
+            metrics_text += f"Recall: {metrics['recall']:.4f}\n"
+            metrics_text += f"F1 Score: {metrics['f1_score']:.4f}\n"
+            metrics_text += f"IoU: {metrics['iou']:.4f}\n"
+            metrics_text += f"Hausdorff Distance: {metrics['hausdorff_distance']:.2f}\n\n"
+            metrics_text += f"True Positives: {metrics['true_positives']}\n"
+            metrics_text += f"False Positives: {metrics['false_positives']}\n"
+            metrics_text += f"False Negatives: {metrics['false_negatives']}\n"
+            metrics_text += f"True Negatives: {metrics['true_negatives']}\n"
+            
             self.metrics_text.delete(1.0, tk.END)
             self.metrics_text.insert(1.0, metrics_text)
             
@@ -474,28 +755,73 @@ class ImageProcessingApp:
         os.makedirs(output_dir, exist_ok=True)
         
         try:
-            # Save individual results
+            # Save individual results with appropriate settings
             for key, image in self.results.items():
-                if key != 'comparison' and key != 'threshold_used':
-                    save_image(image, f"{output_dir}/{key}.png")
+                if key not in ['comparison', 'threshold_used', 'threshold_mode']:
+                    if key == 'edges':
+                        # Edge maps are binary - always save as 8-bit
+                        save_image(image, f"{output_dir}/{key}.png", bit_depth=8)
+                        self.log(f"Saved {key}.png (8-bit binary)")
+                    elif key in ['gradient_mag', 'gradient_x', 'gradient_y']:
+                        # Gradient images - check if multi-band
+                        if len(image.shape) == 3 and image.shape[2] > 1:
+                            # Multi-band gradients - save as 8-bit (PIL limitation for color)
+                            save_image(image, f"{output_dir}/{key}.png", bit_depth=8)
+                            self.log(f"Saved {key}.png (8-bit color)")
+                        else:
+                            # Single band gradients - save as 16-bit to preserve dynamic range
+                            save_image(image, f"{output_dir}/{key}.png", bit_depth=16)
+                            self.log(f"Saved {key}.png (16-bit grayscale)")
+                    else:
+                        # Smoothed images
+                        if len(image.shape) == 3 and image.shape[2] > 1:
+                            # Color smoothed images - save as 8-bit
+                            save_image(image, f"{output_dir}/{key}.png", bit_depth=8)
+                            self.log(f"Saved {key}.png (8-bit color)")
+                        else:
+                            # Single band smoothed - save as 16-bit
+                            save_image(image, f"{output_dir}/{key}.png", bit_depth=16)
+                            self.log(f"Saved {key}.png (16-bit grayscale)")
                     
             # Save comparison results if available
             if 'comparison' in self.results:
                 comp = self.results['comparison']
-                save_image(comp['box_edges'], f"{output_dir}/box_edges.png")
-                save_image(comp['gaussian_edges'], f"{output_dir}/gaussian_edges.png")
+                save_image(comp['box_edges'], f"{output_dir}/box_edges.png", bit_depth=8)
+                save_image(comp['gaussian_edges'], f"{output_dir}/gaussian_edges.png", bit_depth=8)
+                self.log("Saved comparison edge maps")
                 
                 # Save metrics
                 import json
                 with open(f"{output_dir}/comparison_metrics.json", 'w') as f:
                     json.dump(comp['metrics'], f, indent=2)
+                self.log("Saved comparison metrics")
                     
-            self.log(f"Results saved to {output_dir}")
+            # Save processing parameters
+            params = {
+                'kernel_size': int(self.kernel_size_var.get()),
+                'sigma': float(self.sigma_var.get()),
+                'threshold': float(self.threshold_var.get()),
+                'smooth_type': self.smooth_var.get(),
+                'band_mode': self.band_var.get(),
+                'sobel_mode': self.sobel_var.get(),
+                'threshold_mode': self.threshold_mode.get(),
+                'timestamp': timestamp
+            }
+            
+            with open(f"{output_dir}/processing_parameters.json", 'w') as f:
+                json.dump(params, f, indent=2)
+            self.log("Saved processing parameters")
+                    
+            self.log(f"All results successfully saved to {output_dir}")
             messagebox.showinfo("Success", f"Results saved to {output_dir}")
             
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to save results: {str(e)}")
-            self.log(f"Save error: {str(e)}")
+            error_msg = f"Failed to save results: {str(e)}"
+            messagebox.showerror("Error", error_msg)
+            self.log(f"Save error: {error_msg}")
+            # Log more details for debugging
+            import traceback
+            self.log(f"Traceback: {traceback.format_exc()}")
             
     def export_metrics(self):
         """Export metrics to JSON file."""
@@ -512,8 +838,22 @@ class ImageProcessingApp:
         if file_path:
             try:
                 import json
+                metrics_data = {
+                    'parameters': {
+                        'kernel_size': int(self.kernel_size_var.get()),
+                        'sigma': float(self.sigma_var.get()),
+                        'threshold': float(self.threshold_var.get()),
+                        'smooth_type': self.smooth_var.get(),
+                        'band_mode': self.band_var.get(),
+                        'sobel_mode': self.sobel_var.get(),
+                        'threshold_mode': self.threshold_mode.get(),
+                    },
+                    'metrics': self.results['comparison']['metrics'],
+                    'timestamp': datetime.now().isoformat()
+                }
+                
                 with open(file_path, 'w') as f:
-                    json.dump(self.results['comparison']['metrics'], f, indent=2)
+                    json.dump(metrics_data, f, indent=2)
                 self.log(f"Metrics exported to {file_path}")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to export metrics: {str(e)}")

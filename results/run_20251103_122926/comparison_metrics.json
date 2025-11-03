@@ -1,0 +1,13 @@
+{
+  "agreement": 0.9891333333333333,
+  "disagreement": 0.010866666666666667,
+  "precision": 0.9527376033057852,
+  "recall": 0.9075349687214451,
+  "f1_score": 0.9295870981676807,
+  "iou": 0.8684378678325206,
+  "hausdorff_distance": 22.135943621178654,
+  "true_positives": 25823,
+  "false_positives": 1281,
+  "false_negatives": 2631,
+  "true_negatives": 330265
+}
