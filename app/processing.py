@@ -181,7 +181,8 @@ def _convolve_fft_single(image: np.ndarray, kernel: np.ndarray) -> np.ndarray:
 def process_all_bands(image: np.ndarray) -> np.ndarray:
     """
     Process all bands as color image.
-    For images with >3 bands, use first 3 bands as RGB.
+    For images with >3 bands, this should not be called (handled in GUI).
+    For images with <3 bands, create pseudo-color.
     
     Args:
         image: Input image
@@ -190,15 +191,16 @@ def process_all_bands(image: np.ndarray) -> np.ndarray:
         Color image with 3 bands (RGB)
     """
     if len(image.shape) == 3:
-        if image.shape[2] >= 3:
+        num_bands = image.shape[2]
+        if num_bands >= 3:
             # Use first 3 bands as RGB
             return image[:, :, :3]
-        else:
-            # Less than 3 bands - duplicate to create pseudo-color
-            if image.shape[2] == 1:
-                return np.stack([image[:, :, 0]] * 3, axis=2)
-            else:  # 2 bands
-                return np.stack([image[:, :, 0], image[:, :, 1], image[:, :, 0]], axis=2)
+        elif num_bands == 2:
+            # 2 bands - use first for R and G, second for B
+            return np.stack([image[:, :, 0], image[:, :, 1], image[:, :, 0]], axis=2)
+        else:  # 1 band
+            # Single band - duplicate to create grayscale color
+            return np.stack([image[:, :, 0]] * 3, axis=2)
     else:
         # Single channel - convert to pseudo-color
         return np.stack([image] * 3, axis=2)
@@ -206,6 +208,7 @@ def process_all_bands(image: np.ndarray) -> np.ndarray:
 def process_custom_rgb_bands(image: np.ndarray, red_idx: int, green_idx: int, blue_idx: int) -> np.ndarray:
     """
     Create RGB image from custom band selection.
+    Handles images with any number of bands.
     
     Args:
         image: Input image
@@ -217,6 +220,12 @@ def process_custom_rgb_bands(image: np.ndarray, red_idx: int, green_idx: int, bl
         RGB image with custom band assignment
     """
     if len(image.shape) == 3:
+        num_bands = image.shape[2]
+        # Ensure indices are within bounds
+        red_idx = min(red_idx, num_bands - 1)
+        green_idx = min(green_idx, num_bands - 1)
+        blue_idx = min(blue_idx, num_bands - 1)
+        
         red_band = image[:, :, red_idx]
         green_band = image[:, :, green_idx]
         blue_band = image[:, :, blue_idx]
@@ -237,6 +246,9 @@ def process_single_band(image: np.ndarray, band_index: int) -> np.ndarray:
         Single band image
     """
     if len(image.shape) == 3:
+        num_bands = image.shape[2]
+        # Ensure index is within bounds
+        band_index = min(band_index, num_bands - 1)
         return image[:, :, band_index]
     else:
         return image

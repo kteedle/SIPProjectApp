@@ -35,6 +35,92 @@ def load_image(file_path: str, max_size: Optional[Tuple[int, int]] = None) -> np
     else:
         return load_regular_image(file_path, max_size)
 
+def load_geospatial_image(file_path: str, max_size: Optional[Tuple[int, int]] = None) -> np.ndarray:
+    """Load geospatial image formats using rasterio."""
+    try:
+        with rasterio.open(file_path) as src:
+            # Get image properties
+            count = src.count
+            height, width = src.height, src.width
+            dtype = src.dtypes[0]
+            
+            logger.info(f"Loading geospatial image: {width}x{height}, {count} bands, dtype: {dtype}")
+            
+            # Read the data
+            if max_size:
+                # Calculate downsampling
+                scale_x = max_size[0] / width
+                scale_y = max_size[1] / height
+                scale = min(scale_x, scale_y, 1.0)
+                
+                if scale < 1.0:
+                    new_width = int(width * scale)
+                    new_height = int(height * scale)
+                    logger.info(f"Downsampling to {new_width}x{new_height}")
+                    data = src.read(
+                        out_shape=(count, new_height, new_width),
+                        resampling=rasterio.enums.Resampling.bilinear
+                    )
+                else:
+                    data = src.read()
+            else:
+                data = src.read()
+            
+            # Handle NoData values
+            if src.nodata is not None:
+                data = data.astype(np.float64)
+                for i in range(count):
+                    band_data = data[i]
+                    nodata_mask = band_data == src.nodata
+                    if np.any(nodata_mask):
+                        band_mean = np.mean(band_data[~nodata_mask])
+                        band_data[nodata_mask] = band_mean
+            
+            # CRITICAL: Properly handle the array dimensions
+            # data shape is (bands, height, width)
+            # We want (height, width, bands) for image processing
+            if count > 1:
+                # Transpose to (height, width, bands)
+                image_array = np.transpose(data, (1, 2, 0))
+            else:
+                # Single band - shape is (1, height, width) -> (height, width)
+                image_array = data[0]
+                
+            logger.info(f"Loaded image shape: {image_array.shape}")
+            return normalize_image_array(image_array)
+            
+    except Exception as e:
+        logger.error(f"Failed to load geospatial image {file_path}: {str(e)}")
+        raise ValueError(f"Failed to load geospatial image: {str(e)}")
+
+def normalize_image_array(image_array: np.ndarray) -> np.ndarray:
+    """Normalize image array to [0, 1] float range."""
+    # Handle different data types and normalize to [0, 1]
+    if image_array.dtype == np.uint8:
+        normalized = image_array.astype(np.float64) / 255.0
+    elif image_array.dtype == np.uint16:
+        normalized = image_array.astype(np.float64) / 65535.0
+    elif image_array.dtype == np.float32:
+        normalized = image_array.astype(np.float64)
+    elif image_array.dtype == np.int32 or image_array.dtype == np.uint32:
+        # Handle 32-bit images
+        if np.max(image_array) > 1.0:
+            normalized = image_array.astype(np.float64) / np.max(image_array)
+        else:
+            normalized = image_array.astype(np.float64)
+    else:
+        # Auto-normalize unknown types
+        normalized = image_array.astype(np.float64)
+        if np.max(normalized) > 1.0:
+            normalized = normalized / np.max(normalized)
+    
+    # Clip to [0, 1] for safety
+    normalized = np.clip(normalized, 0, 1)
+    
+    logger.debug(f"Normalized image - shape: {normalized.shape}, range: [{np.min(normalized):.3f}, {np.max(normalized):.3f}]")
+    
+    return normalized
+
 def load_regular_image(file_path: str, max_size: Optional[Tuple[int, int]] = None) -> np.ndarray:
     """Load regular image formats using PIL."""
     pil_image = Image.open(file_path)
@@ -59,63 +145,120 @@ def load_regular_image(file_path: str, max_size: Optional[Tuple[int, int]] = Non
     
     return normalize_image_array(image_array)
 
-def load_geospatial_image(file_path: str, max_size: Optional[Tuple[int, int]] = None) -> np.ndarray:
-    """Load geospatial image formats using rasterio."""
-    try:
-        with rasterio.open(file_path) as src:
-            # Get image properties
-            count = src.count
-            height, width = src.height, src.width
-            dtype = src.dtypes[0]
+# def load_geospatial_image(file_path: str, max_size: Optional[Tuple[int, int]] = None) -> np.ndarray:
+#     """Load geospatial image formats using rasterio."""
+#     try:
+#         with rasterio.open(file_path) as src:
+#             # Get image properties
+#             count = src.count
+#             height, width = src.height, src.width
+#             dtype = src.dtypes[0]
             
-            logger.info(f"Loading geospatial image: {width}x{height}, {count} bands, dtype: {dtype}")
+#             logger.info(f"Loading geospatial image: {width}x{height}, {count} bands, dtype: {dtype}")
             
-            # Calculate downsampling factor if max_size specified
-            scale = 1.0
-            if max_size:
-                scale_x = max_size[0] / width
-                scale_y = max_size[1] / height
-                scale = min(scale_x, scale_y, 1.0)  # Don't upsample
+#             # Calculate downsampling factor if max_size specified
+#             scale = 1.0
+#             if max_size:
+#                 scale_x = max_size[0] / width
+#                 scale_y = max_size[1] / height
+#                 scale = min(scale_x, scale_y, 1.0)  # Don't upsample
                 
-                if scale < 1.0:
-                    new_width = int(width * scale)
-                    new_height = int(height * scale)
-                    logger.info(f"Downsampling geospatial image to {new_width}x{new_height}")
+#                 if scale < 1.0:
+#                     new_width = int(width * scale)
+#                     new_height = int(height * scale)
+#                     logger.info(f"Downsampling geospatial image to {new_width}x{new_height}")
                     
-                    # Read resampled data
-                    data = src.read(
-                        out_shape=(count, new_height, new_width),
-                        resampling=rasterio.enums.Resampling.bilinear
-                    )
-                else:
-                    data = src.read()
-            else:
-                data = src.read()
+#                     # Read resampled data
+#                     data = src.read(
+#                         out_shape=(count, new_height, new_width),
+#                         resampling=rasterio.enums.Resampling.bilinear
+#                     )
+#                 else:
+#                     data = src.read()
+#             else:
+#                 data = src.read()
             
-            # Handle NoData values
-            if src.nodata is not None:
-                data = data.astype(np.float64)
-                for i in range(count):
-                    band_data = data[i]
-                    nodata_mask = band_data == src.nodata
-                    if np.any(nodata_mask):
-                        # Replace NoData with band mean
-                        band_mean = np.mean(band_data[~nodata_mask])
-                        band_data[nodata_mask] = band_mean
+#             # Handle NoData values
+#             if src.nodata is not None:
+#                 data = data.astype(np.float64)
+#                 for i in range(count):
+#                     band_data = data[i]
+#                     nodata_mask = band_data == src.nodata
+#                     if np.any(nodata_mask):
+#                         # Replace NoData with band mean
+#                         band_mean = np.mean(band_data[~nodata_mask])
+#                         band_data[nodata_mask] = band_mean
             
-            # Transpose to (height, width, bands) format
-            if count > 1:
-                image_array = np.transpose(data, (1, 2, 0))
-            else:
-                image_array = data[0]  # Single band
+#             # Transpose to (height, width, bands) format - THIS IS CORRECT
+#             # This creates a proper 3D array: (height, width, bands)
+#             if count > 1:
+#                 image_array = np.transpose(data, (1, 2, 0))
+#             else:
+#                 image_array = data[0]  # Single band
                 
-            return normalize_image_array(image_array)
+#             return normalize_image_array(image_array)
             
-    except Exception as e:
-        logger.error(f"Failed to load geospatial image {file_path}: {str(e)}")
-        # Fall back to PIL
-        logger.info("Falling back to PIL loading")
-        return load_regular_image(file_path, max_size)
+#     except Exception as e:
+#         logger.error(f"Failed to load geospatial image {file_path}: {str(e)}")
+#         # Fall back to PIL
+#         logger.info("Falling back to PIL loading")
+#         return load_regular_image(file_path, max_size)
+
+def get_image_bands(file_path: str) -> List[Dict[str, Any]]:
+    """
+    Get information about available bands in an image.
+    
+    Args:
+        file_path: Path to image file
+        
+    Returns:
+        List of band information dictionaries
+    """
+    file_ext = os.path.splitext(file_path)[1].lower()
+    
+    if file_ext in ('.tif', '.tiff', '.jp2', '.img'):
+        # Geospatial image - get band descriptions if available
+        try:
+            with rasterio.open(file_path) as src:
+                bands = []
+                for i in range(src.count):
+                    band_info = {
+                        'index': i,
+                        'description': src.descriptions[i] if src.descriptions and i < len(src.descriptions) else f'Band {i+1}',
+                        'dtype': str(src.dtypes[i]),
+                        'nodata': src.nodata
+                    }
+                    bands.append(band_info)
+                return bands
+        except Exception as e:
+            logger.warning(f"Could not get band info from rasterio: {e}")
+            # Fallback: create band info from image data
+            try:
+                image = load_image(file_path)
+                bands = []
+                if len(image.shape) == 2:
+                    bands.append({'index': 0, 'description': 'Band 1', 'dtype': str(image.dtype)})
+                else:
+                    for i in range(image.shape[2]):
+                        bands.append({'index': i, 'description': f'Band {i+1}', 'dtype': str(image.dtype)})
+                return bands
+            except:
+                return []
+    
+    # Regular image - infer from shape
+    try:
+        image = load_image(file_path)
+        bands = []
+        if len(image.shape) == 2:
+            bands.append({'index': 0, 'description': 'Grayscale', 'dtype': str(image.dtype)})
+        else:
+            for i in range(image.shape[2]):
+                band_names = ['Red', 'Green', 'Blue', 'Alpha', 'Band 5', 'Band 6', 'Band 7', 'Band 8', 'Band 9', 'Band 10']
+                desc = band_names[i] if i < len(band_names) else f'Band {i+1}'
+                bands.append({'index': i, 'description': desc, 'dtype': str(image.dtype)})
+        return bands
+    except:
+        return []
 
 def normalize_image_array(image_array: np.ndarray) -> np.ndarray:
     """Normalize image array to [0, 1] float range."""
@@ -288,50 +431,6 @@ def save_geospatial_image(image: np.ndarray, file_path: str, bit_depth: int = 8,
             for i in range(image_save.shape[2]):
                 dst.write(image_save[:, :, i], i + 1)
 
-def get_image_bands(file_path: str) -> List[Dict[str, Any]]:
-    """
-    Get information about available bands in an image.
-    
-    Args:
-        file_path: Path to image file
-        
-    Returns:
-        List of band information dictionaries
-    """
-    file_ext = os.path.splitext(file_path)[1].lower()
-    
-    if file_ext in ('.tif', '.tiff', '.jp2', '.img'):
-        # Geospatial image - get band descriptions if available
-        try:
-            with rasterio.open(file_path) as src:
-                bands = []
-                for i in range(src.count):
-                    band_info = {
-                        'index': i,
-                        'description': src.descriptions[i] if src.descriptions and i < len(src.descriptions) else f'Band {i+1}',
-                        'dtype': str(src.dtypes[i]),
-                        'nodata': src.nodata
-                    }
-                    bands.append(band_info)
-                return bands
-        except:
-            # Fallback for non-geospatial TIFFs
-            pass
-    
-    # Regular image - infer from shape
-    try:
-        image = load_image(file_path)
-        bands = []
-        if len(image.shape) == 2:
-            bands.append({'index': 0, 'description': 'Grayscale', 'dtype': str(image.dtype)})
-        else:
-            for i in range(image.shape[2]):
-                band_names = ['Red', 'Green', 'Blue', 'Alpha', 'Band 5', 'Band 6', 'Band 7', 'Band 8']
-                desc = band_names[i] if i < len(band_names) else f'Band {i+1}'
-                bands.append({'index': i, 'description': desc, 'dtype': str(image.dtype)})
-        return bands
-    except:
-        return []
 
 def get_image_info(image: np.ndarray) -> dict:
     """

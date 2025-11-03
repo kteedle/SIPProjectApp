@@ -22,9 +22,51 @@ from app.processing import (
     process_custom_rgb_bands,
     process_all_bands,
     process_single_band
+    
 )
 from app.viz import create_comparison_display
 from app.metrics import compare_edge_maps
+
+# def test_image_loading():
+#     """Test function to verify image loading works."""
+#     import tkinter as tk
+#     from tkinter import filedialog
+#     import sys
+#     import os
+    
+#     # Add the app directory to path
+#     sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+    
+#     from app.io_utils import load_image, get_image_bands
+    
+#     root = tk.Tk()
+#     root.withdraw()  # Hide the main window
+    
+#     file_path = filedialog.askopenfilename(
+#         title="Select test image",
+#         filetypes=[("All supported", "*.*")]
+#     )
+    
+#     if file_path:
+#         try:
+#             print(f"Testing image: {file_path}")
+#             image = load_image(file_path)
+#             bands = get_image_bands(file_path)
+            
+#             print(f"Success! Image shape: {image.shape}")
+#             print(f"Number of bands: {len(bands)}")
+#             for band in bands:
+#                 print(f"  Band {band['index']}: {band['description']}")
+                
+#         except Exception as e:
+#             print(f"Error: {e}")
+#             import traceback
+#             print(f"Traceback: {traceback.format_exc()}")
+    
+#     root.destroy()
+
+# if __name__ == "__main__":
+#     test_image_loading()
 
 class ImageProcessingApp:
     """Main application GUI for image edge processing."""
@@ -376,68 +418,161 @@ class ImageProcessingApp:
         if file_path:
             try:
                 self.status_var.set("Loading image...")
+                self.log(f"Loading image: {file_path}")
+                
                 # Load with max size for display
                 self.original_image = load_image(file_path, max_size=(800, 600))
                 self.current_image = self.original_image.copy()
                 self.file_label.config(text=os.path.basename(file_path))
+                
+                # Display the image
                 self.display_image(self.original_image, self.original_canvas)
                 
                 # Get band information
                 self.image_bands = get_image_bands(file_path)
-                self.log(f"Loaded image: {file_path}, shape: {self.original_image.shape}")
+                self.log(f"Successfully loaded image: {file_path}")
+                self.log(f"Image shape: {self.original_image.shape}")
                 self.log(f"Available bands: {len(self.image_bands)}")
                 for band in self.image_bands:
                     self.log(f"  Band {band['index']}: {band['description']}")
                 
-                # Update band selection
-                self.update_band_combos()
+                # Update band selection based on number of bands
+                self.update_band_controls()
                 self.status_var.set("Ready")
                 
             except Exception as e:
-                messagebox.showerror("Error", f"Failed to load image: {str(e)}")
-                self.log(f"Error loading image: {str(e)}")
+                error_msg = f"Failed to load image: {str(e)}"
+                messagebox.showerror("Error", error_msg)
+                self.log(f"Error loading image: {error_msg}")
+                # Log detailed error information
+                import traceback
+                self.log(f"Detailed error: {traceback.format_exc()}")
                 self.status_var.set("Error loading image")
                 
+                # Clear any partial state
+                self.original_image = None
+                self.current_image = None
+                self.image_bands = []
+                self.file_label.config(text="No file selected")
+                
+                # Clear the canvas
+                self.original_canvas.delete("all")
+
+    def update_band_controls(self):
+        """Update band controls based on available bands."""
+        band_descriptions = []
+        for band in self.image_bands:
+            band_descriptions.append(f"{band['index']}: {band['description']}")
+        
+        # Update all combo boxes
+        self.single_band_combo['values'] = band_descriptions
+        self.red_band_combo['values'] = band_descriptions
+        self.green_band_combo['values'] = band_descriptions  
+        self.blue_band_combo['values'] = band_descriptions
+        
+        # Set default values
+        if band_descriptions:
+            if not self.single_band_combo.get():
+                self.single_band_combo.set(band_descriptions[0])
+            
+            # For RGB, use first 3 bands by default, or available bands
+            available_bands = min(3, len(band_descriptions))
+            default_bands = band_descriptions[:available_bands]
+            
+            if not self.red_band_combo.get():
+                self.red_band_combo.set(default_bands[0])
+            if not self.green_band_combo.get() and len(default_bands) > 1:
+                self.green_band_combo.set(default_bands[1])
+            if not self.blue_band_combo.get() and len(default_bands) > 2:
+                self.blue_band_combo.set(default_bands[2])
+            elif len(default_bands) == 2:
+                self.blue_band_combo.set(default_bands[0])  # Use red band for blue if only 2 bands
+            elif len(default_bands) == 1:
+                self.green_band_combo.set(default_bands[0])
+                self.blue_band_combo.set(default_bands[0])
+        
+        # Disable "All Bands (Color)" option if image has more than 3 bands
+        if len(self.image_bands) > 3:
+            # Find and disable the "All Bands" radio button
+            for widget in self.band_frame.winfo_children():
+                if isinstance(widget, ttk.Radiobutton) and widget.cget('value') == 'all_bands':
+                    widget.config(state='disabled')
+                    self.log("'All Bands (Color)' disabled - image has more than 3 bands")
+                    # Force selection to another option if currently selected
+                    if self.band_var.get() == 'all_bands':
+                        self.band_var.set('custom_rgb')
+                        self.on_band_mode_change()
+        else:
+            # Enable "All Bands" if 3 or fewer bands
+            for widget in self.band_frame.winfo_children():
+                if isinstance(widget, ttk.Radiobutton) and widget.cget('value') == 'all_bands':
+                    widget.config(state='normal')
+                
     def display_image(self, image: np.ndarray, canvas: tk.Canvas):
-        """Display an image on a canvas."""
+        """Display an image on a canvas. Handles both single and multi-band images."""
         if image is None:
             return
             
-        # Convert numpy array to PIL Image
-        if image.dtype != np.uint8:
-            # Handle binary edge maps specially
-            if np.max(image) <= 1.0 and np.min(image) >= 0:
-                if len(image.shape) == 2:  # Binary image
+        try:
+            # Convert numpy array to displayable format
+            if image.dtype != np.uint8:
+                # Handle different data types and normalize
+                if np.max(image) <= 1.0 and np.min(image) >= 0:
+                    # Image is in [0,1] range
                     image_display = (image * 255).astype(np.uint8)
-                else:  # Color image
-                    image_display = (np.clip(image, 0, 1) * 255).astype(np.uint8)
-            else:
-                # Normalize to 0-255
-                image_min, image_max = np.min(image), np.max(image)
-                if image_max > image_min:
-                    image_display = ((image - image_min) / (image_max - image_min) * 255).astype(np.uint8)
                 else:
-                    image_display = np.zeros_like(image, dtype=np.uint8)
-        else:
-            image_display = image
+                    # Normalize to 0-255
+                    image_min, image_max = np.min(image), np.max(image)
+                    if image_max > image_min:
+                        image_display = ((image - image_min) / (image_max - image_min) * 255).astype(np.uint8)
+                    else:
+                        image_display = np.zeros_like(image, dtype=np.uint8)
+            else:
+                image_display = image
+                
+            # Handle multi-band vs single-band display
+            if len(image_display.shape) == 3 and image_display.shape[2] in [3, 4]:
+                # RGB or RGBA image
+                if image_display.shape[2] == 3:
+                    pil_image = Image.fromarray(image_display, 'RGB')
+                else:
+                    pil_image = Image.fromarray(image_display, 'RGBA')
+            elif len(image_display.shape) == 3 and image_display.shape[2] > 4:
+                # More than 4 bands - use first 3 for RGB display
+                image_rgb = image_display[:, :, :3]
+                pil_image = Image.fromarray(image_rgb, 'RGB')
+            elif len(image_display.shape) == 3 and image_display.shape[2] == 1:
+                # Single band but with extra dimension
+                image_squeezed = image_display.squeeze()
+                pil_image = Image.fromarray(image_squeezed, 'L')
+            elif len(image_display.shape) == 3:
+                # Other multi-band case - convert to grayscale using mean
+                image_gray = np.mean(image_display, axis=2).astype(np.uint8)
+                pil_image = Image.fromarray(image_gray, 'L')
+            else:
+                # Single channel image
+                pil_image = Image.fromarray(image_display, 'L')
+                
+            # Resize to fit canvas
+            canvas.update_idletasks()  # Ensure canvas has correct dimensions
+            canvas_width = canvas.winfo_width()
+            canvas_height = canvas.winfo_height()
             
-        if len(image_display.shape) == 3 and image_display.shape[2] == 3:
-            pil_image = Image.fromarray(image_display, 'RGB')
-        else:
-            pil_image = Image.fromarray(image_display.squeeze(), 'L')
+            if canvas_width > 1 and canvas_height > 1:
+                pil_image.thumbnail((canvas_width, canvas_height), Image.Resampling.LANCZOS)
             
-        # Resize to fit canvas
-        canvas.update_idletasks()  # Ensure canvas has correct dimensions
-        canvas_width = canvas.winfo_width()
-        canvas_height = canvas.winfo_height()
-        
-        if canvas_width > 1 and canvas_height > 1:
-            pil_image.thumbnail((canvas_width, canvas_height), Image.Resampling.LANCZOS)
-        
-        tk_image = ImageTk.PhotoImage(pil_image)
-        canvas.image = tk_image  # Keep reference
-        canvas.delete("all")
-        canvas.create_image(canvas_width//2, canvas_height//2, anchor=tk.CENTER, image=tk_image)
+            tk_image = ImageTk.PhotoImage(pil_image)
+            canvas.image = tk_image  # Keep reference
+            canvas.delete("all")
+            canvas.create_image(canvas_width//2, canvas_height//2, anchor=tk.CENTER, image=tk_image)
+            
+        except Exception as e:
+            self.log(f"Error displaying image: {str(e)}")
+            self.log(f"Image shape: {image.shape}, dtype: {image.dtype}")
+            # Show error on canvas
+            canvas.delete("all")
+            canvas.create_text(canvas.winfo_width()//2, canvas.winfo_height()//2, 
+                            text=f"Display Error\n{str(e)}", fill="red")
         
     def validate_inputs(self) -> bool:
         """Validate all user inputs."""
@@ -584,11 +719,13 @@ class ImageProcessingApp:
         """Execute the complete image processing pipeline."""
         results = {}
         
-        # Handle band selection - RESTORED MULTI-BAND OPTIONS
+        # Handle band selection - with validation for multi-band images
         if band_mode == "all_bands":
-            # Process all bands as color image
+            # This should only be called for images with <= 3 bands (enforced in GUI)
+            if len(image.shape) == 3 and image.shape[2] > 3:
+                self.log("Warning: 'All Bands' selected for multi-band image, using first 3 bands")
             working_image = process_all_bands(image)
-            self.log("Processing all bands as color image")
+            self.log("Processing all bands as color image (first 3 bands as RGB)")
             
         elif band_mode == "single":
             # Get selected band index
