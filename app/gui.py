@@ -246,11 +246,11 @@ class ImageProcessingApp:
         sobel_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         
         self.sobel_var = tk.StringVar(value="both")
-        ttk.Radiobutton(sobel_frame, text="X Direction", 
-                    variable=self.sobel_var, value="x").grid(row=0, column=0, sticky=tk.W)
-        ttk.Radiobutton(sobel_frame, text="Y Direction", 
-                    variable=self.sobel_var, value="y").grid(row=1, column=0, sticky=tk.W)
-        ttk.Radiobutton(sobel_frame, text="Both (Magnitude)", 
+        # ttk.Radiobutton(sobel_frame, text="X Direction", 
+        #             variable=self.sobel_var, value="x").grid(row=0, column=0, sticky=tk.W)
+        # ttk.Radiobutton(sobel_frame, text="Y Direction", 
+        #             variable=self.sobel_var, value="y").grid(row=1, column=0, sticky=tk.W)
+        ttk.Radiobutton(sobel_frame, text="Sobel Operator", 
                     variable=self.sobel_var, value="both").grid(row=2, column=0, sticky=tk.W)
         
         # Threshold options
@@ -277,7 +277,7 @@ class ImageProcessingApp:
         
         # Comparison toggle
         self.compare_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(control_parent, text="Compare Box vs Gaussian", 
+        ttk.Radiobutton(control_parent, text="Compare Box vs Gaussian", 
                     variable=self.compare_var).grid(row=5, column=0, sticky=tk.W, pady=(0, 10))
         
         # Action buttons
