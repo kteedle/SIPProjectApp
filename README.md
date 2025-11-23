@@ -8,7 +8,6 @@ A complete Python application for image edge detection with customizable smoothi
 - **Sobel Edge Detection**: X, Y, or magnitude gradient computation
 - **Flexible Band Processing**: Grayscale conversion or multi-band processing
 - **Interactive GUI**: Real-time parameter adjustment and preview
-- **Batch Processing**: CLI support for automated processing
 - **Comprehensive Metrics**: Precision, recall, F1-score, Hausdorff distance, and more
 - **Multiple Output Formats**: PNG, TIFF with 8-bit or 16-bit depth
 
