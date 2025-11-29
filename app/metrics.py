@@ -2,7 +2,7 @@
 Metrics for comparing edge maps and evaluating performance.
 """
 import numpy as np
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 import math
 import logging
 from scipy.spatial import cKDTree  # For efficient distance calculations
@@ -49,7 +49,7 @@ def compare_edge_maps(edges1: np.ndarray, edges2: np.ndarray,
     iou = tp / (tp + fp + fn) if (tp + fp + fn) > 0 else 0.0
     
     # Hausdorff-like distance (optimized)
-    h_distance = optimized_hausdorff_distance(edges1_bin, edges2_bin, max_samples)
+    h_distance = approximate_hausdorff_distance(edges1_bin, edges2_bin, max_samples)
     
     logger.debug(f"Comparison results: TP={tp}, FP={fp}, FN={fn}, Precision={precision:.4f}, Recall={recall:.4f}")
     
@@ -67,8 +67,9 @@ def compare_edge_maps(edges1: np.ndarray, edges2: np.ndarray,
         'true_negatives': int(tn)
     }
 
-def optimized_hausdorff_distance(edges1: np.ndarray, edges2: np.ndarray, 
-                                max_samples: int = 10000) -> float:
+def approximate_hausdorff_distance(edges1: np.ndarray, edges2: np.ndarray, 
+                                   max_samples: int = 10000,
+                                   max_distance: Optional[float] = None) -> float:
     """
     Compute approximate Hausdorff distance between two edge maps efficiently.
     Uses KD-tree for fast nearest neighbor searches and sampling for large images.
@@ -77,6 +78,7 @@ def optimized_hausdorff_distance(edges1: np.ndarray, edges2: np.ndarray,
         edges1: First binary edge map
         edges2: Second binary edge map  
         max_samples: Maximum number of edge pixels to sample
+        max_distance: Maximum distance to return if edge maps are empty (default: inf)
         
     Returns:
         Approximate Hausdorff distance
@@ -86,7 +88,7 @@ def optimized_hausdorff_distance(edges1: np.ndarray, edges2: np.ndarray,
     coords2 = np.argwhere(edges2 > 0)
     
     if len(coords1) == 0 or len(coords2) == 0:
-        return float('inf')
+        return max_distance if max_distance is not None else float('inf')
     
     # Sample coordinates if too many (for performance)
     if len(coords1) > max_samples:
@@ -138,3 +140,6 @@ def compute_gradient_metrics(gradient: np.ndarray, edges: np.ndarray) -> Dict[st
         metrics['edge_non_edge_ratio'] = 0.0
     
     return metrics
+
+
+

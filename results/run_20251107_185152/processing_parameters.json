@@ -1,0 +1,10 @@
+{
+  "kernel_size": 3,
+  "sigma": 1.0,
+  "threshold": 0.11029411764705882,
+  "smooth_type": "gaussian",
+  "band_mode": "custom_rgb",
+  "sobel_mode": "both",
+  "threshold_mode": "relative",
+  "timestamp": "20251107_185152"
+}

@@ -145,65 +145,6 @@ def load_regular_image(file_path: str, max_size: Optional[Tuple[int, int]] = Non
     
     return normalize_image_array(image_array)
 
-# def load_geospatial_image(file_path: str, max_size: Optional[Tuple[int, int]] = None) -> np.ndarray:
-#     """Load geospatial image formats using rasterio."""
-#     try:
-#         with rasterio.open(file_path) as src:
-#             # Get image properties
-#             count = src.count
-#             height, width = src.height, src.width
-#             dtype = src.dtypes[0]
-            
-#             logger.info(f"Loading geospatial image: {width}x{height}, {count} bands, dtype: {dtype}")
-            
-#             # Calculate downsampling factor if max_size specified
-#             scale = 1.0
-#             if max_size:
-#                 scale_x = max_size[0] / width
-#                 scale_y = max_size[1] / height
-#                 scale = min(scale_x, scale_y, 1.0)  # Don't upsample
-                
-#                 if scale < 1.0:
-#                     new_width = int(width * scale)
-#                     new_height = int(height * scale)
-#                     logger.info(f"Downsampling geospatial image to {new_width}x{new_height}")
-                    
-#                     # Read resampled data
-#                     data = src.read(
-#                         out_shape=(count, new_height, new_width),
-#                         resampling=rasterio.enums.Resampling.bilinear
-#                     )
-#                 else:
-#                     data = src.read()
-#             else:
-#                 data = src.read()
-            
-#             # Handle NoData values
-#             if src.nodata is not None:
-#                 data = data.astype(np.float64)
-#                 for i in range(count):
-#                     band_data = data[i]
-#                     nodata_mask = band_data == src.nodata
-#                     if np.any(nodata_mask):
-#                         # Replace NoData with band mean
-#                         band_mean = np.mean(band_data[~nodata_mask])
-#                         band_data[nodata_mask] = band_mean
-            
-#             # Transpose to (height, width, bands) format - THIS IS CORRECT
-#             # This creates a proper 3D array: (height, width, bands)
-#             if count > 1:
-#                 image_array = np.transpose(data, (1, 2, 0))
-#             else:
-#                 image_array = data[0]  # Single band
-                
-#             return normalize_image_array(image_array)
-            
-#     except Exception as e:
-#         logger.error(f"Failed to load geospatial image {file_path}: {str(e)}")
-#         # Fall back to PIL
-#         logger.info("Falling back to PIL loading")
-#         return load_regular_image(file_path, max_size)
-
 def get_image_bands(file_path: str) -> List[Dict[str, Any]]:
     """
     Get information about available bands in an image.
@@ -458,3 +399,4 @@ def get_image_info(image: np.ndarray) -> dict:
         info['type'] = 'grayscale'
         
     return info
+

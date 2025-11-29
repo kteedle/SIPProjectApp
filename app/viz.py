@@ -76,3 +76,4 @@ def plot_results(original: np.ndarray, smoothed: np.ndarray,
         
     plt.tight_layout()
     return fig
+

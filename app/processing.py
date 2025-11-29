@@ -9,15 +9,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 def generate_box_kernel(size: int) -> np.ndarray:
-    """
-    Generate a box (averaging) kernel of given size.
-    
-    Args:
-        size: Kernel size (odd integer)
-        
-    Returns:
-        Normalized box kernel
-    """
+
     if size % 2 == 0:
         raise ValueError("Kernel size must be odd")
         
@@ -25,16 +17,7 @@ def generate_box_kernel(size: int) -> np.ndarray:
     return kernel / np.sum(kernel)
 
 def generate_gaussian_kernel(size: int, sigma: float) -> np.ndarray:
-    """
-    Generate a 2D Gaussian kernel.
-    
-    Args:
-        size: Kernel size (odd integer)
-        sigma: Standard deviation of Gaussian
-        
-    Returns:
-        Normalized Gaussian kernel
-    """
+
     if size % 2 == 0:
         raise ValueError("Kernel size must be odd")
         
@@ -51,17 +34,7 @@ def generate_gaussian_kernel(size: int, sigma: float) -> np.ndarray:
     return kernel / np.sum(kernel)
 
 def convolve_2d(image: np.ndarray, kernel: np.ndarray, use_fft: bool = None) -> np.ndarray:
-    """
-    Convolve 2D image with a kernel using either spatial domain or FFT.
     
-    Args:
-        image: Input image (2D or 3D array)
-        kernel: Convolution kernel (2D array)
-        use_fft: Whether to use FFT method. If None, auto-select based on size.
-        
-    Returns:
-        Convolved image
-    """
     if use_fft is None:
         # Auto-select: use FFT for large kernels or large images
         kernel_size = max(kernel.shape)
@@ -77,16 +50,7 @@ def convolve_2d(image: np.ndarray, kernel: np.ndarray, use_fft: bool = None) -> 
         return convolve_spatial(image, kernel)
 
 def convolve_spatial(image: np.ndarray, kernel: np.ndarray) -> np.ndarray:
-    """
-    Convolve image with kernel using spatial domain (nested loops).
-    
-    Args:
-        image: Input image
-        kernel: Convolution kernel
-        
-    Returns:
-        Convolved image
-    """
+
     if len(image.shape) == 3:
         # Multi-channel image
         result = np.zeros_like(image)
@@ -451,3 +415,4 @@ def combine_bands_to_grayscale(image: np.ndarray, band_weights: Optional[np.ndar
 #         return image  # Already grayscale
     
 #     return image[:,:,band_indices]
+

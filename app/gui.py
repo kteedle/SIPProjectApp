@@ -24,49 +24,7 @@ from app.processing import (
     process_single_band
     
 )
-from app.viz import create_comparison_display
 from app.metrics import compare_edge_maps
-
-# def test_image_loading():
-#     """Test function to verify image loading works."""
-#     import tkinter as tk
-#     from tkinter import filedialog
-#     import sys
-#     import os
-    
-#     # Add the app directory to path
-#     sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    
-#     from app.io_utils import load_image, get_image_bands
-    
-#     root = tk.Tk()
-#     root.withdraw()  # Hide the main window
-    
-#     file_path = filedialog.askopenfilename(
-#         title="Select test image",
-#         filetypes=[("All supported", "*.*")]
-#     )
-    
-#     if file_path:
-#         try:
-#             print(f"Testing image: {file_path}")
-#             image = load_image(file_path)
-#             bands = get_image_bands(file_path)
-            
-#             print(f"Success! Image shape: {image.shape}")
-#             print(f"Number of bands: {len(bands)}")
-#             for band in bands:
-#                 print(f"  Band {band['index']}: {band['description']}")
-                
-#         except Exception as e:
-#             print(f"Error: {e}")
-#             import traceback
-#             print(f"Traceback: {traceback.format_exc()}")
-    
-#     root.destroy()
-
-# if __name__ == "__main__":
-#     test_image_loading()
 
 class ImageProcessingApp:
     """Main application GUI for image edge processing."""
@@ -83,6 +41,17 @@ class ImageProcessingApp:
         self.results: Dict[str, Any] = {}
         self.processing_thread: Optional[threading.Thread] = None
         self.abort_processing = False
+
+        # Region of interest (ROI) selection state (x0, y0, x1, y1 in image coordinates)
+        self.roi: Optional[Tuple[int, int, int, int]] = None
+        self._roi_canvas_start: Optional[Tuple[int, int]] = None
+        self._roi_rect_id: Optional[int] = None
+
+        # References for comparison images (for zoom)
+        self.box_smoothed_image: Optional[np.ndarray] = None
+        self.box_edges_image: Optional[np.ndarray] = None
+        self.gaussian_smoothed_image: Optional[np.ndarray] = None
+        self.gaussian_edges_image: Optional[np.ndarray] = None
         
         self.setup_logging()
         self.create_widgets()
@@ -276,7 +245,7 @@ class ImageProcessingApp:
                     variable=self.threshold_mode, value="absolute").grid(row=1, column=0, sticky=tk.W)
         
         # Comparison toggle
-        self.compare_var = tk.BooleanVar(value=False)
+        self.compare_var = tk.BooleanVar(value=True)
         ttk.Radiobutton(control_parent, text="Compare Box vs Gaussian", 
                     variable=self.compare_var).grid(row=5, column=0, sticky=tk.W, pady=(0, 10))
         
@@ -379,9 +348,51 @@ class ImageProcessingApp:
         
         self.edges_canvas = tk.Canvas(self.edges_tab, bg='white')
         self.edges_canvas.pack(fill=tk.BOTH, expand=True)
-        
-        self.comparison_canvas = tk.Canvas(self.comparison_tab, bg='white')
-        self.comparison_canvas.pack(fill=tk.BOTH, expand=True)
+
+        # Enable ROI selection on original canvas
+        self.original_canvas.bind("<ButtonPress-1>", self._on_original_mouse_down)
+        self.original_canvas.bind("<B1-Motion>", self._on_original_mouse_drag)
+        self.original_canvas.bind("<ButtonRelease-1>", self._on_original_mouse_up)
+
+        # Comparison tab: 4 images (2x2) + metrics
+        comparison_images_frame = ttk.Frame(self.comparison_tab)
+        comparison_images_frame.pack(fill=tk.BOTH, expand=True)
+        comparison_images_frame.rowconfigure(0, weight=1)
+        comparison_images_frame.rowconfigure(1, weight=1)
+        comparison_images_frame.columnconfigure(0, weight=1)
+        comparison_images_frame.columnconfigure(1, weight=1)
+
+        # Box filter smoothed
+        ttk.Label(comparison_images_frame, text="Box - Smoothed").grid(row=0, column=0, sticky=tk.W)
+        self.box_smoothed_canvas = tk.Canvas(comparison_images_frame, bg='white')
+        self.box_smoothed_canvas.grid(row=0, column=0, sticky=(tk.N, tk.S, tk.E, tk.W))
+
+        # Box filter edges
+        ttk.Label(comparison_images_frame, text="Box - Edges").grid(row=0, column=1, sticky=tk.W)
+        self.box_edges_canvas = tk.Canvas(comparison_images_frame, bg='white')
+        self.box_edges_canvas.grid(row=0, column=1, sticky=(tk.N, tk.S, tk.E, tk.W))
+
+        # Gaussian smoothed
+        ttk.Label(comparison_images_frame, text="Gaussian - Smoothed").grid(row=1, column=0, sticky=tk.W)
+        self.gaussian_smoothed_canvas = tk.Canvas(comparison_images_frame, bg='white')
+        self.gaussian_smoothed_canvas.grid(row=1, column=0, sticky=(tk.N, tk.S, tk.E, tk.W))
+
+        # Gaussian edges
+        ttk.Label(comparison_images_frame, text="Gaussian - Edges").grid(row=1, column=1, sticky=tk.W)
+        self.gaussian_edges_canvas = tk.Canvas(comparison_images_frame, bg='white')
+        self.gaussian_edges_canvas.grid(row=1, column=1, sticky=(tk.N, tk.S, tk.E, tk.W))
+
+        # Bind zoom behavior (1x1 resolution) for comparison canvases (sync all four)
+        self.box_smoothed_canvas.bind("<Button-1>", lambda e: self._on_comparison_zoom(self.box_smoothed_canvas, e))
+        self.box_edges_canvas.bind("<Button-1>", lambda e: self._on_comparison_zoom(self.box_edges_canvas, e))
+        self.gaussian_smoothed_canvas.bind("<Button-1>", lambda e: self._on_comparison_zoom(self.gaussian_smoothed_canvas, e))
+        self.gaussian_edges_canvas.bind("<Button-1>", lambda e: self._on_comparison_zoom(self.gaussian_edges_canvas, e))
+
+        # Right-click anywhere in comparison images to reset all zooms
+        self.box_smoothed_canvas.bind("<Button-3>", lambda e: self._reset_comparison_zoom())
+        self.box_edges_canvas.bind("<Button-3>", lambda e: self._reset_comparison_zoom())
+        self.gaussian_smoothed_canvas.bind("<Button-3>", lambda e: self._reset_comparison_zoom())
+        self.gaussian_edges_canvas.bind("<Button-3>", lambda e: self._reset_comparison_zoom())
         
         # Metrics display
         metrics_frame = ttk.Frame(self.comparison_tab)
@@ -421,7 +432,7 @@ class ImageProcessingApp:
                 self.log(f"Loading image: {file_path}")
                 
                 # Load with max size for display
-                self.original_image = load_image(file_path, max_size=(800, 600))
+                self.original_image = load_image(file_path, max_size=(12000, 12000))
                 self.current_image = self.original_image.copy()
                 self.file_label.config(text=os.path.basename(file_path))
                 
@@ -455,8 +466,10 @@ class ImageProcessingApp:
                 self.image_bands = []
                 self.file_label.config(text="No file selected")
                 
-                # Clear the canvas
+                # Clear the canvas and ROI
                 self.original_canvas.delete("all")
+                self.roi = None
+                self._roi_rect_id = None
 
     def update_band_controls(self):
         """Update band controls based on available bands."""
@@ -553,13 +566,27 @@ class ImageProcessingApp:
                 # Single channel image
                 pil_image = Image.fromarray(image_display, 'L')
                 
-            # Resize to fit canvas
+            # Resize to fit canvas (for on-screen display only; processing stays full resolution)
             canvas.update_idletasks()  # Ensure canvas has correct dimensions
             canvas_width = canvas.winfo_width()
             canvas_height = canvas.winfo_height()
             
             if canvas_width > 1 and canvas_height > 1:
                 pil_image.thumbnail((canvas_width, canvas_height), Image.Resampling.LANCZOS)
+
+            # Store geometry info for coordinate mapping (ROI & zoom)
+            disp_w, disp_h = pil_image.size
+            img_h, img_w = image.shape[:2]
+            scale_x = disp_w / img_w if img_w > 0 else 1.0
+            scale_y = disp_h / img_h if img_h > 0 else 1.0
+            offset_x = (canvas_width - disp_w) // 2
+            offset_y = (canvas_height - disp_h) // 2
+
+            canvas._image_scale_x = scale_x
+            canvas._image_scale_y = scale_y
+            canvas._image_offset_x = offset_x
+            canvas._image_offset_y = offset_y
+            canvas._image_shape = (img_h, img_w)
             
             tk_image = ImageTk.PhotoImage(pil_image)
             canvas.image = tk_image  # Keep reference
@@ -615,12 +642,16 @@ class ImageProcessingApp:
             return False
             
     def preview_processing(self):
-        """Run processing on a downsampled preview."""
+        """Run processing on user-selected ROI (no downsampling)."""
         if not self.validate_inputs():
             return
-            
-        # Create downsampled version for preview
-        preview_image = self.original_image[::2, ::2]  # Simple downsampling
+
+        if self.roi is None:
+            messagebox.showerror("Error", "Please select an area of interest (bounding box) on the Original tab before running preview.")
+            return
+
+        x0, y0, x1, y1 = self.roi
+        preview_image = self.original_image[y0:y1, x0:x1].copy()
         
         self.abort_processing = False
         self.processing_thread = threading.Thread(target=self._process_image, 
@@ -628,13 +659,20 @@ class ImageProcessingApp:
         self.processing_thread.start()
         
     def run_processing(self):
-        """Run full processing on the original image."""
+        """Run full processing on the user-selected ROI (no downsampling)."""
         if not self.validate_inputs():
             return
-            
+
+        if self.roi is None:
+            messagebox.showerror("Error", "Please select an area of interest (bounding box) on the Original tab before running processing.")
+            return
+
+        x0, y0, x1, y1 = self.roi
+        roi_image = self.original_image[y0:y1, x0:x1].copy()
+
         self.abort_processing = False
         self.processing_thread = threading.Thread(target=self._process_image, 
-                        args=(self.original_image, False), daemon=True)
+                        args=(roi_image, False), daemon=True)
         self.processing_thread.start()
         
     def abort_processing_command(self):
@@ -649,10 +687,18 @@ class ImageProcessingApp:
         self.current_image = None
         self.results = {}
         self.image_bands = []
+        self.roi = None
+        self._roi_rect_id = None
         
         # Clear displays
         for canvas in [self.original_canvas, self.smoothed_canvas, 
-                      self.gradient_canvas, self.edges_canvas, self.comparison_canvas]:
+                      self.gradient_canvas, self.edges_canvas,
+                      getattr(self, "box_smoothed_canvas", None),
+                      getattr(self, "box_edges_canvas", None),
+                      getattr(self, "gaussian_smoothed_canvas", None),
+                      getattr(self, "gaussian_edges_canvas", None)]:
+            if canvas is None:
+                continue
             canvas.delete("all")
             canvas.image = None
             
@@ -824,7 +870,9 @@ class ImageProcessingApp:
             comparison_metrics = compare_edge_maps(box_edges, gaussian_edges)
             
             results['comparison'] = {
+                'box_smoothed': box_smoothed,
                 'box_edges': box_edges,
+                'gaussian_smoothed': gaussian_smoothed,
                 'gaussian_edges': gaussian_edges,
                 'metrics': comparison_metrics
             }
@@ -853,11 +901,22 @@ class ImageProcessingApp:
         # Display comparison if available
         if 'comparison' in results:
             comp = results['comparison']
-            # Create comparison display
-            comparison_image = create_comparison_display(
-                comp['box_edges'], comp['gaussian_edges']
-            )
-            self.display_image(comparison_image, self.comparison_canvas)
+
+            # Keep references to full-resolution comparison images for zoom
+            self.box_smoothed_image = comp.get('box_smoothed')
+            self.box_edges_image = comp.get('box_edges')
+            self.gaussian_smoothed_image = comp.get('gaussian_smoothed')
+            self.gaussian_edges_image = comp.get('gaussian_edges')
+
+            # Show each image separately in the comparison tab
+            if self.box_smoothed_image is not None:
+                self.display_image(self.box_smoothed_image, self.box_smoothed_canvas)
+            if self.box_edges_image is not None:
+                self.display_image(self.box_edges_image, self.box_edges_canvas)
+            if self.gaussian_smoothed_image is not None:
+                self.display_image(self.gaussian_smoothed_image, self.gaussian_smoothed_canvas)
+            if self.gaussian_edges_image is not None:
+                self.display_image(self.gaussian_edges_image, self.gaussian_edges_canvas)
             
             # Display metrics
             metrics_text = "Comparison Metrics (Box vs Gaussian):\n\n"
@@ -923,6 +982,13 @@ class ImageProcessingApp:
             # Save comparison results if available
             if 'comparison' in self.results:
                 comp = self.results['comparison']
+                # Save smoothed and edge maps from comparison
+                if 'box_smoothed' in comp:
+                    save_image(comp['box_smoothed'], f"{output_dir}/box_smoothed.png", bit_depth=16)
+                    self.log("Saved box_smoothed.png")
+                if 'gaussian_smoothed' in comp:
+                    save_image(comp['gaussian_smoothed'], f"{output_dir}/gaussian_smoothed.png", bit_depth=16)
+                    self.log("Saved gaussian_smoothed.png")
                 save_image(comp['box_edges'], f"{output_dir}/box_edges.png", bit_depth=8)
                 save_image(comp['gaussian_edges'], f"{output_dir}/gaussian_edges.png", bit_depth=8)
                 self.log("Saved comparison edge maps")
@@ -994,3 +1060,151 @@ class ImageProcessingApp:
                 self.log(f"Metrics exported to {file_path}")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to export metrics: {str(e)}")
+
+    # -----------------------
+    # ROI handling on canvas
+    # -----------------------
+    def _canvas_to_image_coords(self, canvas: tk.Canvas, x: int, y: int) -> Tuple[int, int]:
+        """Map canvas coordinates to image coordinates using stored scale/offset."""
+        scale_x = getattr(canvas, "_image_scale_x", 1.0)
+        scale_y = getattr(canvas, "_image_scale_y", 1.0)
+        offset_x = getattr(canvas, "_image_offset_x", 0)
+        offset_y = getattr(canvas, "_image_offset_y", 0)
+        img_h, img_w = getattr(canvas, "_image_shape", (0, 0))
+
+        ix = int((x - offset_x) / scale_x)
+        iy = int((y - offset_y) / scale_y)
+
+        ix = max(0, min(img_w - 1, ix))
+        iy = max(0, min(img_h - 1, iy))
+        return ix, iy
+
+    def _on_original_mouse_down(self, event: tk.Event):
+        """Start ROI selection on the original image canvas."""
+        if self.original_image is None:
+            return
+        self._roi_canvas_start = (event.x, event.y)
+        if self._roi_rect_id is not None:
+            self.original_canvas.delete(self._roi_rect_id)
+            self._roi_rect_id = None
+
+    def _on_original_mouse_drag(self, event: tk.Event):
+        """Update ROI rectangle while dragging."""
+        if self._roi_canvas_start is None:
+            return
+        x0, y0 = self._roi_canvas_start
+        x1, y1 = event.x, event.y
+        if self._roi_rect_id is None:
+            self._roi_rect_id = self.original_canvas.create_rectangle(
+                x0, y0, x1, y1, outline="red", width=2
+            )
+        else:
+            self.original_canvas.coords(self._roi_rect_id, x0, y0, x1, y1)
+
+    def _on_original_mouse_up(self, event: tk.Event):
+        """Finalize ROI selection and convert to image coordinates."""
+        if self._roi_canvas_start is None or self.original_image is None:
+            return
+
+        x0_c, y0_c = self._roi_canvas_start
+        x1_c, y1_c = event.x, event.y
+
+        # Normalize canvas coordinates
+        x0_c, x1_c = sorted((x0_c, x1_c))
+        y0_c, y1_c = sorted((y0_c, y1_c))
+
+        # Map to image coordinates
+        x0_i, y0_i = self._canvas_to_image_coords(self.original_canvas, x0_c, y0_c)
+        x1_i, y1_i = self._canvas_to_image_coords(self.original_canvas, x1_c, y1_c)
+
+        # Ensure non-zero size ROI
+        if x1_i <= x0_i or y1_i <= y0_i:
+            self.log("Ignored ROI with zero size")
+            return
+
+        self.roi = (x0_i, y0_i, x1_i, y1_i)
+        self.log(f"Selected ROI: x=({x0_i}, {x1_i}), y=({y0_i}, {y1_i})")
+
+    # -----------------------
+    # Zoom handling (comparison tab)
+    # -----------------------
+    def _apply_zoom_to_canvas(self, canvas: tk.Canvas, image: Optional[np.ndarray], ix: int, iy: int):
+        """Apply 1x1 zoom around (ix, iy) to a single canvas."""
+        if image is None:
+            return
+
+        img_h, img_w = image.shape[:2]
+        half_w = min(128, img_w // 2)
+        half_h = min(128, img_h // 2)
+
+        x0 = max(0, ix - half_w)
+        x1 = min(img_w, ix + half_w)
+        y0 = max(0, iy - half_h)
+        y1 = min(img_h, iy + half_h)
+
+        zoom_region = image[y0:y1, x0:x1].copy()
+
+        # Normalize for display (no resizing -> 1 image pixel == 1 screen pixel)
+        if zoom_region.dtype != np.uint8:
+            if np.max(zoom_region) <= 1.0 and np.min(zoom_region) >= 0:
+                zoom_display = (zoom_region * 255).astype(np.uint8)
+            else:
+                zmin, zmax = np.min(zoom_region), np.max(zoom_region)
+                if zmax > zmin:
+                    zoom_display = ((zoom_region - zmin) / (zmax - zmin) * 255).astype(np.uint8)
+                else:
+                    zoom_display = np.zeros_like(zoom_region, dtype=np.uint8)
+        else:
+            zoom_display = zoom_region
+
+        if len(zoom_display.shape) == 3 and zoom_display.shape[2] in [3, 4]:
+            mode = 'RGB' if zoom_display.shape[2] == 3 else 'RGBA'
+            pil_zoom = Image.fromarray(zoom_display, mode)
+        elif len(zoom_display.shape) == 3 and zoom_display.shape[2] > 4:
+            pil_zoom = Image.fromarray(zoom_display[:, :, :3], 'RGB')
+        elif len(zoom_display.shape) == 3 and zoom_display.shape[2] == 1:
+            pil_zoom = Image.fromarray(zoom_display.squeeze(), 'L')
+        elif len(zoom_display.shape) == 3:
+            gray = np.mean(zoom_display, axis=2).astype(np.uint8)
+            pil_zoom = Image.fromarray(gray, 'L')
+        else:
+            pil_zoom = Image.fromarray(zoom_display, 'L')
+
+        # Draw zoomed image centered in the same canvas (no scaling)
+        canvas.update_idletasks()
+        c_w = canvas.winfo_width()
+        c_h = canvas.winfo_height()
+        tk_zoom_img = ImageTk.PhotoImage(pil_zoom)
+        canvas.image = tk_zoom_img
+        canvas.delete("all")
+        canvas.create_image(c_w // 2, c_h // 2, anchor=tk.CENTER, image=tk_zoom_img)
+
+    def _on_comparison_zoom(self, source_canvas: tk.Canvas, event: tk.Event):
+        """Handle synchronized zoom across all four comparison images."""
+        if (
+            self.box_smoothed_image is None
+            or self.box_edges_image is None
+            or self.gaussian_smoothed_image is None
+            or self.gaussian_edges_image is None
+        ):
+            return
+
+        # Compute image coordinates from the canvas that was clicked
+        ix, iy = self._canvas_to_image_coords(source_canvas, event.x, event.y)
+
+        # Apply the same (ix, iy) zoom to all four images/canvases
+        self._apply_zoom_to_canvas(self.box_smoothed_canvas, self.box_smoothed_image, ix, iy)
+        self._apply_zoom_to_canvas(self.box_edges_canvas, self.box_edges_image, ix, iy)
+        self._apply_zoom_to_canvas(self.gaussian_smoothed_canvas, self.gaussian_smoothed_image, ix, iy)
+        self._apply_zoom_to_canvas(self.gaussian_edges_canvas, self.gaussian_edges_image, ix, iy)
+
+    def _reset_comparison_zoom(self):
+        """Reset all comparison canvases back to their full image views."""
+        if self.box_smoothed_image is not None:
+            self.display_image(self.box_smoothed_image, self.box_smoothed_canvas)
+        if self.box_edges_image is not None:
+            self.display_image(self.box_edges_image, self.box_edges_canvas)
+        if self.gaussian_smoothed_image is not None:
+            self.display_image(self.gaussian_smoothed_image, self.gaussian_smoothed_canvas)
+        if self.gaussian_edges_image is not None:
+            self.display_image(self.gaussian_edges_image, self.gaussian_edges_canvas)
